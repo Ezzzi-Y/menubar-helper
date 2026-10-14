@@ -60,6 +60,35 @@ struct DashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            HStack(spacing: 10) {
+                Image(systemName: "server.rack").font(.system(size: 20)).frame(width: 27)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Nacos").font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 4) {
+                        Circle().fill(model.nacosStatus == .running ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 5, height: 5)
+                        Text(model.nacosStatus.label)
+                        Text("· 配置中心 · 8080")
+                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                if model.nacosStatus == .running {
+                    Button("停止") { model.operateNacos("stop") }
+                        .controlSize(.small).frame(minWidth: 44)
+                } else if model.nacosStatus == .stopped {
+                    Button("启动") { model.operateNacos("start") }
+                        .controlSize(.small).frame(minWidth: 44)
+                } else if model.nacosStatus == .error {
+                    Button("刷新") { model.refreshNacos() }
+                        .controlSize(.small).frame(minWidth: 44)
+                }
+            }
+            .disabled(model.nacosOperationRunning || model.nacosRefreshing)
+            if let error = model.nacosError, !error.isEmpty {
+                Text(error).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
             ForEach(services) { service in
                 HStack(spacing: 10) {
                     Image(systemName: service.symbol).font(.system(size: 20)).frame(width: 27)

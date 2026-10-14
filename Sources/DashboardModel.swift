@@ -25,6 +25,10 @@ final class DashboardModel: ObservableObject {
     @Published var dockerOperationRunning = false
     @Published var dockerError: String?
     @Published var showingDockerStopConfirmation = false
+    @Published var nacosStatus: NacosStatus = .checking
+    @Published var nacosRefreshing = false
+    @Published var nacosOperationRunning = false
+    @Published var nacosError: String?
     @Published var metrics: SystemSnapshot?
     @Published var cpuHistory: [Double] = []
     @Published var downloadHistory: [Double] = []
@@ -36,12 +40,14 @@ final class DashboardModel: ObservableObject {
     private let metricsProvider = SystemMetricsProvider()
     private let quotaProvider = CodexUsageProvider()
     private let docker = DockerDesktop()
+    private let nacos = NacosService()
     private let metricsQueue = DispatchQueue(label: "local.devtoolbox.metrics", qos: .utility)
     private var metricsSampling = false
     private var visible = false
     private var timer: Timer?
     private var lastServiceRefresh = Date.distantPast
     private var lastDockerRefresh = Date.distantPast
+    private var lastNacosRefresh = Date.distantPast
     private var lastQuotaAttempt = Date.distantPast
     private let brew = FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/brew")
         ? "/opt/homebrew/bin/brew" : "/usr/local/bin/brew"
@@ -49,6 +55,7 @@ final class DashboardModel: ObservableObject {
     func start() {
         refreshServices()
         refreshDocker()
+        refreshNacos()
         refreshQuota()
         sampleMetrics()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -57,6 +64,7 @@ final class DashboardModel: ObservableObject {
             self.sampleMetrics()
             if Date().timeIntervalSince(self.lastServiceRefresh) >= 15 { self.refreshServices() }
             if Date().timeIntervalSince(self.lastDockerRefresh) >= 15 { self.refreshDocker() }
+            if Date().timeIntervalSince(self.lastNacosRefresh) >= 15 { self.refreshNacos() }
             if Date().timeIntervalSince(self.lastQuotaAttempt) >= 300 { self.refreshQuota() }
         }
     }
@@ -73,11 +81,46 @@ final class DashboardModel: ObservableObject {
             sampleMetrics()
             refreshServices()
             refreshDocker()
+            refreshNacos()
             if Date().timeIntervalSince(lastQuotaAttempt) >= 300 { refreshQuota() }
         }
     }
 
-    func refreshAll() { refreshServices(); refreshDocker(); refreshQuota(); sampleMetrics() }
+    func refreshAll() { refreshServices(); refreshDocker(); refreshNacos(); refreshQuota(); sampleMetrics() }
+
+    func refreshNacos() {
+        guard !nacosRefreshing, !nacosOperationRunning else { return }
+        nacosRefreshing = true
+        lastNacosRefresh = Date()
+        DispatchQueue.global(qos: .utility).async {
+            let status = self.nacos.status()
+            DispatchQueue.main.async {
+                self.nacosStatus = status
+                self.nacosRefreshing = false
+            }
+        }
+    }
+
+    func operateNacos(_ action: String) {
+        guard !nacosOperationRunning, action == "start" || action == "stop" else { return }
+        nacosOperationRunning = true
+        nacosError = nil
+        nacosStatus = action == "start" ? .starting : .stopping
+        DispatchQueue.global(qos: .utility).async {
+            let (code, output) = self.nacos.operate(action)
+            DispatchQueue.main.async {
+                self.nacosOperationRunning = false
+                if code != 0 {
+                    let message = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.nacosError = message.isEmpty ? "Nacos 操作失败" : message
+                }
+                self.refreshNacos()
+                for delay in [2.0, 5.0, 10.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.refreshNacos() }
+                }
+            }
+        }
+    }
 
     func refreshDocker() {
         guard !dockerRefreshing, !dockerOperationRunning else { return }

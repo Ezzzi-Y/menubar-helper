@@ -101,8 +101,9 @@ func renderPreviews(to directory: String) {
     model.now = Date()
     model.refreshServices()
     model.refreshDocker()
+    model.refreshNacos()
     let dockerDeadline = Date().addingTimeInterval(10)
-    while model.dockerRefreshing && Date() < dockerDeadline {
+    while (model.dockerRefreshing || model.nacosRefreshing) && Date() < dockerDeadline {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     }
     do { model.quota = try CodexUsageProvider().fetch() }
