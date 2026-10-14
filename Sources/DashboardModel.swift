@@ -20,6 +20,11 @@ final class DashboardModel: ObservableObject {
     @Published var operationRunning = false
     @Published var operationMessage: String?
     @Published var operationError: String?
+    @Published var dockerStatus: DockerStatus = .checking
+    @Published var dockerRefreshing = false
+    @Published var dockerOperationRunning = false
+    @Published var dockerError: String?
+    @Published var showingDockerStopConfirmation = false
     @Published var metrics: SystemSnapshot?
     @Published var cpuHistory: [Double] = []
     @Published var downloadHistory: [Double] = []
@@ -30,17 +35,20 @@ final class DashboardModel: ObservableObject {
     @Published var now = Date()
     private let metricsProvider = SystemMetricsProvider()
     private let quotaProvider = CodexUsageProvider()
+    private let docker = DockerDesktop()
     private let metricsQueue = DispatchQueue(label: "local.devtoolbox.metrics", qos: .utility)
     private var metricsSampling = false
     private var visible = false
     private var timer: Timer?
     private var lastServiceRefresh = Date.distantPast
+    private var lastDockerRefresh = Date.distantPast
     private var lastQuotaAttempt = Date.distantPast
     private let brew = FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/brew")
         ? "/opt/homebrew/bin/brew" : "/usr/local/bin/brew"
 
     func start() {
         refreshServices()
+        refreshDocker()
         refreshQuota()
         sampleMetrics()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -48,6 +56,7 @@ final class DashboardModel: ObservableObject {
             self.now = Date()
             self.sampleMetrics()
             if Date().timeIntervalSince(self.lastServiceRefresh) >= 15 { self.refreshServices() }
+            if Date().timeIntervalSince(self.lastDockerRefresh) >= 15 { self.refreshDocker() }
             if Date().timeIntervalSince(self.lastQuotaAttempt) >= 300 { self.refreshQuota() }
         }
     }
@@ -63,11 +72,46 @@ final class DashboardModel: ObservableObject {
             }
             sampleMetrics()
             refreshServices()
+            refreshDocker()
             if Date().timeIntervalSince(lastQuotaAttempt) >= 300 { refreshQuota() }
         }
     }
 
-    func refreshAll() { refreshServices(); refreshQuota(); sampleMetrics() }
+    func refreshAll() { refreshServices(); refreshDocker(); refreshQuota(); sampleMetrics() }
+
+    func refreshDocker() {
+        guard !dockerRefreshing, !dockerOperationRunning else { return }
+        dockerRefreshing = true
+        lastDockerRefresh = Date()
+        DispatchQueue.global(qos: .utility).async {
+            let (status, error) = self.docker.status()
+            DispatchQueue.main.async {
+                self.dockerStatus = status
+                self.dockerError = error
+                self.dockerRefreshing = false
+            }
+        }
+    }
+
+    func operateDocker(_ action: String) {
+        guard !dockerOperationRunning, action == "start" || action == "stop" else { return }
+        dockerOperationRunning = true
+        dockerError = nil
+        dockerStatus = action == "start" ? .starting : .stopping
+        DispatchQueue.global(qos: .utility).async {
+            let (code, output) = self.docker.operate(action)
+            DispatchQueue.main.async {
+                self.dockerOperationRunning = false
+                if code != 0 {
+                    self.dockerError = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                self.refreshDocker()
+                for delay in [2.0, 5.0, 10.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.refreshDocker() }
+                }
+            }
+        }
+    }
 
     func sampleMetrics() {
         guard !metricsSampling else { return }

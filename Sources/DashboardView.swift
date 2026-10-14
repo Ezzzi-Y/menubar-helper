@@ -18,11 +18,48 @@ struct DashboardView: View {
         .alert("服务操作失败", isPresented: Binding(get: { model.operationError != nil }, set: { if !$0 { model.operationError = nil } })) {
             Button("好", role: .cancel) { model.operationError = nil }
         } message: { Text(model.operationError ?? "") }
+        .confirmationDialog("停止 Docker Desktop？", isPresented: Binding(
+            get: { model.showingDockerStopConfirmation },
+            set: { model.showingDockerStopConfirmation = $0 }
+        )) {
+            Button("停止 Docker 和所有容器", role: .destructive) { model.operateDocker("stop") }
+        } message: {
+            Text("当前运行的容器也会停止。")
+        }
     }
 
     private var serviceCard: some View {
         Card {
             sectionTitle("本地服务", symbol: "server.rack")
+            HStack(spacing: 10) {
+                Image(systemName: "shippingbox").font(.system(size: 20)).frame(width: 27)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Docker Desktop").font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 4) {
+                        Circle().fill(model.dockerStatus == .running ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 5, height: 5)
+                        Text(model.dockerStatus.label)
+                        Text("· 容器引擎")
+                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                if model.dockerStatus == .running {
+                    Button("停止") { model.showingDockerStopConfirmation = true }
+                        .controlSize(.small).frame(minWidth: 44)
+                } else if model.dockerStatus == .stopped {
+                    Button("启动") { model.operateDocker("start") }
+                        .controlSize(.small).frame(minWidth: 44)
+                } else if model.dockerStatus == .error {
+                    Button("刷新") { model.refreshDocker() }
+                        .controlSize(.small).frame(minWidth: 44)
+                }
+            }
+            .disabled(model.dockerOperationRunning || model.dockerRefreshing)
+            if let error = model.dockerError, !error.isEmpty {
+                Text(error).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
             ForEach(services) { service in
                 HStack(spacing: 10) {
                     Image(systemName: service.symbol).font(.system(size: 20)).frame(width: 27)
