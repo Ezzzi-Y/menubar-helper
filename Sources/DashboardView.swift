@@ -89,6 +89,66 @@ struct DashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            HStack(spacing: 10) {
+                Image(systemName: ollamaService.symbol).font(.system(size: 20)).frame(width: 27)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ollamaService.name).font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 4) {
+                        Circle().fill(model.isRunning(ollamaService) ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 5, height: 5)
+                        Text(model.status(ollamaService))
+                        Text("· \(ollamaService.detail)")
+                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if NSApp.currentEvent?.modifierFlags.contains(.option) == true {
+                        model.toggleOllamaModels()
+                    }
+                }
+                Spacer(minLength: 6)
+                Button(model.isRunning(ollamaService) || model.states[ollamaService.formula] == "starting" ? "停止" : "启动") {
+                    let action = model.isRunning(ollamaService) || model.states[ollamaService.formula] == "starting" ? "stop" : "run"
+                    model.operate(action, targets: [ollamaService])
+                }.controlSize(.small).frame(minWidth: 44)
+                    .disabled(model.operationRunning || model.serviceRefreshing)
+            }
+            if model.showingOllamaModels && model.isRunning(ollamaService) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text("已安装模型").font(.system(size: 11, weight: .medium))
+                        Spacer()
+                        if model.ollamaModelsRefreshing { ProgressView().controlSize(.mini) }
+                        Button("刷新") { model.refreshOllamaModels() }
+                            .buttonStyle(.borderless).disabled(model.ollamaModelsRefreshing || model.ollamaModelOperating != nil)
+                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                    if let error = model.ollamaModelsError {
+                        Text(error).font(.system(size: 10)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if model.ollamaModels.isEmpty && !model.ollamaModelsRefreshing && model.ollamaModelsError == nil {
+                        Text("尚未安装模型").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    ForEach(model.ollamaModels) { item in
+                        HStack(spacing: 6) {
+                            Circle().fill(item.loaded ? Color.accentColor : Color.secondary.opacity(0.35))
+                                .frame(width: 5, height: 5)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                Text("\(item.loaded ? "已加载" : "未加载") · \(ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file))")
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 6)
+                            if model.ollamaModelOperating == item.name { ProgressView().controlSize(.mini) }
+                            Button(item.loaded ? "关闭" : "打开") { model.operateOllamaModel(item) }
+                                .controlSize(.small).frame(minWidth: 44)
+                                .disabled(model.ollamaModelsRefreshing || model.ollamaModelOperating != nil)
+                        }
+                    }
+                }
+                .padding(.leading, 37)
+            }
+            Divider()
             ForEach(services) { service in
                 HStack(spacing: 10) {
                     Image(systemName: service.symbol).font(.system(size: 20)).frame(width: 27)

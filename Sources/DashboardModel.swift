@@ -11,8 +11,10 @@ struct Service: Identifiable {
 
 let services = [
     Service(name: "MySQL 8.4", formula: "mysql@8.4", symbol: "cylinder.split.1x2", detail: "本机数据库 · 3306"),
+    Service(name: "PostgreSQL 18", formula: "postgresql@18", symbol: "cylinder.split.1x2", detail: "本机数据库 · 5432"),
     Service(name: "Redis", formula: "redis", symbol: "square.stack.3d.up", detail: "本机缓存 · 6379")
 ]
+let ollamaService = Service(name: "Ollama", formula: "ollama", symbol: "brain", detail: "本地模型 · 11434")
 
 final class DashboardModel: ObservableObject {
     @Published var states: [String: String] = [:]
@@ -20,6 +22,11 @@ final class DashboardModel: ObservableObject {
     @Published var operationRunning = false
     @Published var operationMessage: String?
     @Published var operationError: String?
+    @Published var showingOllamaModels = false
+    @Published var ollamaModels: [OllamaModel] = []
+    @Published var ollamaModelsRefreshing = false
+    @Published var ollamaModelOperating: String?
+    @Published var ollamaModelsError: String?
     @Published var dockerStatus: DockerStatus = .checking
     @Published var dockerRefreshing = false
     @Published var dockerOperationRunning = false
@@ -41,6 +48,8 @@ final class DashboardModel: ObservableObject {
     private let quotaProvider = CodexUsageProvider()
     private let docker = DockerDesktop()
     private let nacos = NacosService()
+    private let ollama = OllamaClient()
+    private let ollamaServiceControl = OllamaService()
     private let metricsQueue = DispatchQueue(label: "local.devtoolbox.metrics", qos: .utility)
     private var metricsSampling = false
     private var visible = false
@@ -87,6 +96,54 @@ final class DashboardModel: ObservableObject {
     }
 
     func refreshAll() { refreshServices(); refreshDocker(); refreshNacos(); refreshQuota(); sampleMetrics() }
+
+    func toggleOllamaModels() {
+        guard isRunning(ollamaService) else { return }
+        showingOllamaModels.toggle()
+        if showingOllamaModels { refreshOllamaModels() }
+    }
+
+    func refreshOllamaModels() {
+        guard showingOllamaModels, isRunning(ollamaService),
+              !ollamaModelsRefreshing, ollamaModelOperating == nil else { return }
+        ollamaModelsRefreshing = true
+        Task {
+            do {
+                let models = try await ollama.models()
+                await MainActor.run {
+                    self.ollamaModels = models
+                    self.ollamaModelsError = nil
+                    self.ollamaModelsRefreshing = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.ollamaModelsError = error.localizedDescription
+                    self.ollamaModelsRefreshing = false
+                }
+            }
+        }
+    }
+
+    func operateOllamaModel(_ model: OllamaModel) {
+        guard showingOllamaModels, isRunning(ollamaService),
+              ollamaModelOperating == nil, !ollamaModelsRefreshing else { return }
+        ollamaModelOperating = model.name
+        ollamaModelsError = nil
+        Task {
+            do {
+                try await ollama.setLoaded(model.name, loaded: !model.loaded)
+                await MainActor.run {
+                    self.ollamaModelOperating = nil
+                    self.refreshOllamaModels()
+                }
+            } catch {
+                await MainActor.run {
+                    self.ollamaModelOperating = nil
+                    self.ollamaModelsError = error.localizedDescription
+                }
+            }
+        }
+    }
 
     func refreshNacos() {
         guard !nacosRefreshing, !nacosOperationRunning else { return }
@@ -199,9 +256,21 @@ final class DashboardModel: ObservableObject {
                     updated[name] = row["status"] as? String ?? "unknown"
                 }
             }
+            if self.ollamaServiceControl.isServing() {
+                updated[ollamaService.formula] = "started"
+            } else if updated[ollamaService.formula] == "started" {
+                updated[ollamaService.formula] = "starting"
+            }
             DispatchQueue.main.async {
                 self.states = updated
                 self.serviceRefreshing = false
+                if updated[ollamaService.formula] != "started" {
+                    self.showingOllamaModels = false
+                    self.ollamaModels = []
+                    self.ollamaModelsError = nil
+                } else if self.showingOllamaModels {
+                    self.refreshOllamaModels()
+                }
             }
         }
     }
@@ -235,7 +304,14 @@ final class DashboardModel: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             var failures: [String] = []
             for service in targets {
-                let (code, output) = self.command(["services", verb, service.formula])
+                let (code, output): (Int32, String)
+                if service.formula == ollamaService.formula && verb == "stop" {
+                    let brewResult = self.command(["services", "stop", service.formula])
+                    (code, output) = self.ollamaServiceControl.isServing()
+                        ? self.ollamaServiceControl.stopManualServer() : brewResult
+                } else {
+                    (code, output) = self.command(["services", verb, service.formula])
+                }
                 if code != 0 { failures.append("\(service.name)：\n\(output)") }
             }
             DispatchQueue.main.async {
@@ -243,6 +319,11 @@ final class DashboardModel: ObservableObject {
                 self.operationError = failures.isEmpty ? nil : failures.joined(separator: "\n\n")
                 self.operationMessage = failures.isEmpty ? (verb == "run" ? "服务已启动" : "服务已停止") : "操作失败"
                 self.refreshServices()
+                if targets.contains(where: { $0.formula == ollamaService.formula }) {
+                    for delay in [2.0, 5.0] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.refreshServices() }
+                    }
+                }
             }
         }
     }
@@ -251,6 +332,7 @@ final class DashboardModel: ObservableObject {
     func status(_ service: Service) -> String {
         switch states[service.formula] {
         case "started": return "运行中"
+        case "starting": return "启动中"
         case "none", "stopped": return "已停止"
         case nil: return serviceRefreshing ? "检查中" : "状态未知"
         default: return "服务异常"
